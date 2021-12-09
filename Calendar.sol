@@ -3,6 +3,7 @@ pragma solidity ^0.8.0;
 import "./Reservation.sol";
 import "./ERC809.sol";
 import "./TreeMap.sol";
+import "./ContextMixin.sol";
 import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/65ef662a2ba263b62de0f45b062c8942362ba8c8/contracts/utils/Strings.sol";
 
 contract OwnableDelegateProxy {}
@@ -11,7 +12,7 @@ contract ProxyRegistry {
     mapping(address => OwnableDelegateProxy) public proxies;
 }
 
-contract Calendar is ERC809 {
+contract Calendar is ERC809, ContextMixin {
   using TreeMap for TreeMap.Map;
 
   struct CalenderMetaData {
@@ -30,12 +31,7 @@ contract Calendar is ERC809 {
   // address of the ERC721 contract tokenizing reseravation/access of this contract's token
 //   address public reservationContract;
 
-  address proxyRegistryAddress;
-
-  constructor(
-      address _proxyRegistryAddress
-  ) ERC721("Calendar", "CAL") {
-    proxyRegistryAddress = _proxyRegistryAddress;
+  constructor() ERC721("Calendar", "CAL") {
     reservationContract = address(new Reservation());
   }
 
@@ -140,7 +136,7 @@ contract Calendar is ERC809 {
     }
 
     uint256 rentPrice = calenderMeta[_tokenId].hourlyRentPrice * noOfHours;
-    require(msg.value == rentPrice, "Provided ether is not equal to rent price");
+    require(msg.value >= rentPrice, "Provided ether is less then the rent price");
     calenderMeta[_tokenId].owner.transfer(msg.value);
 
     Reservation reservation = Reservation(reservationContract);
@@ -277,19 +273,29 @@ contract Calendar is ERC809 {
   function baseTokenURI() public pure returns (string memory) {
     return "https://creatures-api.opensea.io/api/creature/";
   }
-  
-  function isApprovedForAll(address owner, address operator)
-    override
-    public
-    view
-    returns (bool)
-  {
-    // Whitelist OpenSea proxy contract for easy trading.
-    ProxyRegistry proxyRegistry = ProxyRegistry(proxyRegistryAddress);
-    if (address(proxyRegistry.proxies(owner)) == operator) {
-        return true;
-    }
 
-    return super.isApprovedForAll(owner, operator);
+  /**
+  * This is used instead of msg.sender as transactions won't be sent by the original token owner, but by OpenSea.
+  */
+  function _msgSender()
+  internal
+  override
+  view
+  returns (address sender)
+  {
+    return ContextMixin.msgSender();
+  }
+  
+  function isApprovedForAll(
+    address _owner,
+    address _operator
+  ) public override view returns (bool isOperator) {
+    // if OpenSea's ERC721 Proxy Address is detected, auto-return true
+    if (_operator == address(0x58807baD0B376efc12F5AD86aAc70E78ed67deaE)) {
+      return true;
+    }
+        
+    // otherwise, use the default ERC721.isApprovedForAll()
+    return ERC721.isApprovedForAll(_owner, _operator);
   }
 }
