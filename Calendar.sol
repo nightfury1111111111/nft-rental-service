@@ -14,6 +14,13 @@ contract ProxyRegistry {
 contract Calendar is ERC809 {
   using TreeMap for TreeMap.Map;
 
+  struct CalenderMetaData {
+    address payable owner;
+    uint256 hourlyRentPrice;
+  }
+
+  mapping(uint256 => CalenderMetaData) calenderMeta;
+
   // limit reservation duration to 8 hours because we do not have spam protection yet
   uint256 constant public RESERVATION_DURATION_LIMIT = 8 hours * 1000;
 
@@ -33,18 +40,35 @@ contract Calendar is ERC809 {
   }
 
   /// @notice Create a new calendar token
-  function mint()
+  function mint(uint256 _hourlyRentPrice)
   public
   {
-    super._mint(msg.sender, totalSupply());
+    uint256 _tokenId = totalSupply();
+    super._mint(msg.sender, _tokenId);
+    calenderMeta[_tokenId].owner = payable(msg.sender);
+    calenderMeta[_tokenId].hourlyRentPrice = _hourlyRentPrice;
   }
 
   /// @notice Destroy a calendar token
   /// TODO: figure out what to do when there are expired and/or outstanding reservations
   function burn(uint256 _tokenId)
   public
+  onlyOwner(_tokenId)
   {
     super._burn(_tokenId);
+    delete calenderMeta[_tokenId];
+  }
+
+  modifier onlyOwner(uint256 _tokenId) {
+    require(msg.sender == ownerOf(_tokenId), "Not authorized");
+    _;
+  }
+
+  function updateHourlyRentPrice(uint256 _tokenId, uint256 _hourlyRentPrice)
+  public
+  onlyOwner(_tokenId)
+  {
+    calenderMeta[_tokenId].hourlyRentPrice = _hourlyRentPrice;
   }
 
   /// @notice Query if token `_tokenId` if available to reserve between `_start` and `_stop` time
@@ -99,6 +123,7 @@ contract Calendar is ERC809 {
   ///  is not previously reserved.
   function reserve(uint256 _tokenId, uint256 _start, uint256 _stop)
   public
+  payable
   returns(uint256)
   {
     require(_exists(_tokenId), "Calendar does not exist");
@@ -106,6 +131,17 @@ contract Calendar is ERC809 {
     if (!isAvailable(_tokenId, _start, _stop)) {
       revert("Token is unavailable during this time period");
     }
+
+    uint256 noOfHours = (_stop - _start) / 3600;
+    uint256 remainder = (_stop - _start) - 3600 * noOfHours;
+
+    if(remainder > 0) {
+        noOfHours += 1;
+    }
+
+    uint256 rentPrice = calenderMeta[_tokenId].hourlyRentPrice * noOfHours;
+    require(msg.value == rentPrice, "Provided ether is not equal to rent price");
+    calenderMeta[_tokenId].owner.transfer(msg.value);
 
     Reservation reservation = Reservation(reservationContract);
     uint256 reservationId = reservation.reserve(msg.sender, _tokenId, _start, _stop);
