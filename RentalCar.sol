@@ -16,14 +16,14 @@ contract RentalCar is ERC809, ContextMixin {
   // Metadata associated with each RCT token
   struct RentalCarMetaData {
     uint256 hourlyRentPrice;
-    // TODO: To be added
+    // TODO: collateral to be added
     // uint256 collateral;
   }
 
   // mapping of token(RentalCar) id to RentalCarMetaData
   mapping(uint256 => RentalCarMetaData) rentalCarMeta;
 
-  // limit reservation duration to 8 hours because we do not have spam protection yet
+  // limit reservation duration to 48 hours because we do not have spam protection yet
   uint256 constant public RESERVATION_DURATION_LIMIT = 48 hours;
 
   // mapping of token(RCT) id to mapping from start/end timestamp of a reservation to its id
