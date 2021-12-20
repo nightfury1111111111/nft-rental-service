@@ -7,9 +7,12 @@ import "./ERC809.sol";
 
 contract Reservation is Ownable, ERC809Child {
 
-  mapping(uint256 => uint256) public calendarIds;
+  mapping(uint256 => uint256) public rentalCarIds;
   mapping(uint256 => uint256) public startTimestamps;
   mapping(uint256 => uint256) public stopTimestamps;
+
+  mapping(uint256 => uint256) public rentPrice;
+  mapping(uint256 => bool) public feeCollected;
 
   uint256 nextTokenId;
 
@@ -20,7 +23,7 @@ contract Reservation is Ownable, ERC809Child {
   /// @dev A successful reservation must ensure each time slot in the range _start to _stop
   ///  is not previously reserved (by calling the function checkAvailable() described below)
   ///  and then emit a Reserve event.
-  function reserve(address _to, uint256 _calendarId, uint256 _start, uint256 _stop)
+  function reserve(address _to, uint256 _rentalCarId, uint256 _start, uint256 _stop, uint256 _rentPrice)
   external
   onlyOwner()
   returns(uint256)
@@ -30,13 +33,20 @@ contract Reservation is Ownable, ERC809Child {
 
     super._mint(_to, tokenId);
 
-    calendarIds[tokenId] = _calendarId;
+    rentalCarIds[tokenId] = _rentalCarId;
     startTimestamps[tokenId] = _start;
     stopTimestamps[tokenId] = _stop;
+    rentPrice[tokenId] = _rentPrice;
 
-    emit Creation(_to, _calendarId, tokenId);
+    emit Creation(_to, _rentalCarId, tokenId);
 
     return tokenId;
+  }
+
+  function setFeeCollected(uint256 _tokenId, bool collected)
+  public
+  {
+    feeCollected[_tokenId] = collected;
   }
 
   function cancel(address _owner, uint256 _tokenId)
@@ -45,11 +55,11 @@ contract Reservation is Ownable, ERC809Child {
   {
     super._burn(_tokenId);
 
-    uint256 calendarId = calendarIds[_tokenId];
-    delete calendarIds[_tokenId];
+    uint256 rentalCarId = rentalCarIds[_tokenId];
+    delete rentalCarIds[_tokenId];
     delete startTimestamps[_tokenId];
     delete stopTimestamps[_tokenId];
 
-    emit Cancellation(_owner, calendarId, _tokenId);
+    emit Cancellation(_owner, rentalCarId, _tokenId);
   }
 }

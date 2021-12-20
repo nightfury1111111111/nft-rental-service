@@ -6,65 +6,69 @@ import "./TreeMap.sol";
 import "./ContextMixin.sol";
 import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/65ef662a2ba263b62de0f45b062c8942362ba8c8/contracts/utils/Strings.sol";
 
-contract OwnableDelegateProxy {}
-
-contract ProxyRegistry {
-    mapping(address => OwnableDelegateProxy) public proxies;
-}
-
-contract Calendar is ERC809, ContextMixin {
+contract RentalCar is ERC809, ContextMixin {
   using TreeMap for TreeMap.Map;
 
-  struct CalenderMetaData {
-    address payable owner;
-    uint256 hourlyRentPrice;
-  }
-
-  mapping(uint256 => CalenderMetaData) calenderMeta;
-
-  // limit reservation duration to 8 hours because we do not have spam protection yet
-  uint256 constant public RESERVATION_DURATION_LIMIT = 8 hours * 1000;
-
-  // mapping of token(calendar) id to mapping from start/end timestamp of a reservation to its id
-  mapping(uint256 => TreeMap.Map) public startTimestampsMap;
-
-  // address of the ERC721 contract tokenizing reseravation/access of this contract's token
-//   address public reservationContract;
-
-  constructor() ERC721("Calendar", "CAL") {
+  constructor() ERC721("RentalCar", "RCT") {
     reservationContract = address(new Reservation());
   }
 
-  /// @notice Create a new calendar token
+  // Metadata associated with each RCT token
+  struct RentalCarMetaData {
+    uint256 hourlyRentPrice;
+    // TODO: To be added
+    // uint256 collateral;
+  }
+
+  // mapping of token(RentalCar) id to RentalCarMetaData
+  mapping(uint256 => RentalCarMetaData) rentalCarMeta;
+
+  // limit reservation duration to 8 hours because we do not have spam protection yet
+  uint256 constant public RESERVATION_DURATION_LIMIT = 48 hours;
+
+  // mapping of token(RCT) id to mapping from start/end timestamp of a reservation to its id
+  mapping(uint256 => TreeMap.Map) public startTimestampsMap;
+
+  /// @notice Create a new RCT token
   function mint(uint256 _hourlyRentPrice)
   public
   {
     uint256 _tokenId = totalSupply();
     super._mint(msg.sender, _tokenId);
-    calenderMeta[_tokenId].owner = payable(msg.sender);
-    calenderMeta[_tokenId].hourlyRentPrice = _hourlyRentPrice;
+    rentalCarMeta[_tokenId].hourlyRentPrice = _hourlyRentPrice;
   }
 
-  /// @notice Destroy a calendar token
-  /// TODO: figure out what to do when there are expired and/or outstanding reservations
+  /// @notice Destroy a RCT token
   function burn(uint256 _tokenId)
   public
   onlyOwner(_tokenId)
   {
     super._burn(_tokenId);
-    delete calenderMeta[_tokenId];
+    delete rentalCarMeta[_tokenId];
   }
 
+  /// @notice Only RCT token owner modifier
   modifier onlyOwner(uint256 _tokenId) {
     require(msg.sender == ownerOf(_tokenId), "Not authorized");
     _;
   }
 
+  /// @notice Only RCT token owner or Reservation owner modifier
+  modifier onlyOwnerOrRenter(uint256 _tokenId, uint256 _reservationId) {
+    bool isOwner = msg.sender == ownerOf(_tokenId);
+    Reservation reservation = Reservation(reservationContract);
+    address renter = reservation.ownerOf(_reservationId);
+    bool isRenter = msg.sender == renter;
+    require(isOwner || isRenter, "Not authorized");
+    _;
+  }
+
+  /// @notice Updates hourly rent price of RCT token
   function updateHourlyRentPrice(uint256 _tokenId, uint256 _hourlyRentPrice)
   public
   onlyOwner(_tokenId)
   {
-    calenderMeta[_tokenId].hourlyRentPrice = _hourlyRentPrice;
+    rentalCarMeta[_tokenId].hourlyRentPrice = _hourlyRentPrice;
   }
 
   /// @notice Query if token `_tokenId` if available to reserve between `_start` and `_stop` time
@@ -122,10 +126,11 @@ contract Calendar is ERC809, ContextMixin {
   payable
   returns(uint256)
   {
-    require(_exists(_tokenId), "Calendar does not exist");
+    require(_exists(_tokenId), "RentalCar does not exist");
+    require(_start >= block.timestamp, "Cannot reserve for past date");
 
     if (!isAvailable(_tokenId, _start, _stop)) {
-      revert("Token is unavailable during this time period");
+      revert("RentalCar is unavailable during this time period");
     }
 
     uint256 noOfHours = (_stop - _start) / 3600;
@@ -135,12 +140,11 @@ contract Calendar is ERC809, ContextMixin {
         noOfHours += 1;
     }
 
-    uint256 rentPrice = calenderMeta[_tokenId].hourlyRentPrice * noOfHours;
+    uint256 rentPrice = rentalCarMeta[_tokenId].hourlyRentPrice * noOfHours;
     require(msg.value >= rentPrice, "Provided ether is less then the rent price");
-    calenderMeta[_tokenId].owner.transfer(msg.value);
 
     Reservation reservation = Reservation(reservationContract);
-    uint256 reservationId = reservation.reserve(msg.sender, _tokenId, _start, _stop);
+    uint256 reservationId = reservation.reserve(msg.sender, _tokenId, _start, _stop, rentPrice);
     startTimestampsMap[_tokenId].put(_start, reservationId);
 
     return reservationId; 
@@ -153,9 +157,8 @@ contract Calendar is ERC809, ContextMixin {
   override
   returns (uint256)
   {
-    require(_exists(_tokenId), "Calendar does not exist");
+    require(_exists(_tokenId), "RentalCar does not exist");
 
-    // TODO: implement iterator in TreeMap for more efficient batch removal
     TreeMap.Map storage startTimestamps = startTimestampsMap[_tokenId];
     Reservation reservation = Reservation(reservationContract);
 
@@ -164,12 +167,21 @@ contract Calendar is ERC809, ContextMixin {
     uint256 stopTime;
     uint256 reservationId;
     uint256 cancelled = 0;
-    // FIXME: a token could also have a `renter => startTimestamps` mapping to skip
-    //   reservations that don't belong to a renter more efficiently
+
+    uint256 rentPrice;
+    address payable renter;
+
+    // If the msg.sender is owner of RCT token, he should be able to cancel all the reservations made
+    // A renter can cancel all bookings made by him in the given time period
     (found, startTime, reservationId) = startTimestamps.ceilingEntry(startTime);
     while (found) {
       stopTime = reservation.stopTimestamps(reservationId);
-      if (stopTime <= _stop && reservation.ownerOf(reservationId) == msg.sender) {
+      if (stopTime <= _stop && ((reservation.ownerOf(reservationId) == msg.sender) || (ownerOf(_tokenId) == msg.sender))) {
+
+        rentPrice = reservation.rentPrice(reservationId);
+        renter = payable(reservation.ownerOf(reservationId));
+        renter.transfer(rentPrice);
+
         reservation.cancel(msg.sender, reservationId);
         startTimestamps.remove(startTime);
 
@@ -182,20 +194,25 @@ contract Calendar is ERC809, ContextMixin {
     return cancelled;
   }
 
-  /// @notice Cancel reservation `_reservationId` for calendar `_tokenId`
+  /// @notice Cancel reservation `_reservationId` for RCT `_tokenId`
   function cancel(uint256 _tokenId, uint256 _reservationId)
   public
+  onlyOwnerOrRenter(_tokenId, _reservationId)
   override
   {
-    require(_exists(_tokenId), "Calendar does not exist");
+    require(_exists(_tokenId), "RentalCar does not exist");
 
     Reservation reservation = Reservation(reservationContract);
 
     uint256 startTime = reservation.startTimestamps(_reservationId);
-    uint256 calendarId = reservation.calendarIds(_reservationId);
-    if (calendarId != _tokenId) {
-      revert("Calendar id is invalid");
+    uint256 rentalCarId = reservation.rentalCarIds(_reservationId);
+    if (rentalCarId != _tokenId) {
+      revert("RentalCar id is invalid");
     }
+
+    uint256 rentPrice = reservation.rentPrice(_reservationId);
+    address payable renter = payable(reservation.ownerOf(_reservationId));
+    renter.transfer(rentPrice);
 
     reservation.cancel(msg.sender, _reservationId);
 
@@ -203,7 +220,7 @@ contract Calendar is ERC809, ContextMixin {
     startTimestamps.remove(startTime);
   }
 
-  /// @notice Find the owner of the reservation that overlaps `_timestamp` for the calendar `_tokenId`
+  /// @notice Find the owner of the reservation that overlaps `_timestamp` for the RCT `_tokenId`
   function renterOf(uint256 _tokenId, uint256 _timestamp)
   public
   override
@@ -227,7 +244,7 @@ contract Calendar is ERC809, ContextMixin {
     }
   }
 
-  /// @notice Count all reservations for an calendar
+  /// @notice Count all reservations for a RentalCar
   function reservationBalanceOf(uint256 _tokenId)
   public
   view
@@ -236,36 +253,40 @@ contract Calendar is ERC809, ContextMixin {
     return startTimestampsMap[_tokenId].size();
   }
 
-  /// @notice Get reservation details for a calendar by index
-  function reservationOfCalendarByIndex(uint256 _tokenId, uint256 _index)
+  /// @notice RCT token owner can collect fee once reservation is completed or has been started
+  function takeFee(uint256 _tokenId)
   public
-  view
-  returns (uint256 reservationId, uint256 startTime, uint256 stopTime, address owner)
   {
+    TreeMap.Map storage startTimestamps = startTimestampsMap[_tokenId];
+
     bool found;
-    (found, startTime, reservationId) = startTimestampsMap[_tokenId].select(_index);
-    require(found, "Reservation index out of bound");
+    uint256 startTime;
+    uint256 reservationId;
+    bool feeCollected;
+    uint256 rentPrice;
 
-    Reservation reservation = Reservation(reservationContract);
-    stopTime = reservation.stopTimestamps(reservationId);
-    owner = reservation.ownerOf(reservationId);
-  }
+    (found, startTime, reservationId) = startTimestamps.floorEntry(block.timestamp);
 
-  /// @notice Get reservation details for an account by index
-  function reservationOfOwnerByIndex(address _owner, uint256 _index)
-  public
-  view
-  returns (uint256 reservationId, uint256 startTime, uint256 stopTime, uint256 calendarId)
-  {
+    address payable tokenOwner = payable(ownerOf(_tokenId));
     Reservation reservation = Reservation(reservationContract);
 
-    reservationId = reservation.tokenOfOwnerByIndex(_owner, _index);
-    startTime = reservation.startTimestamps(reservationId);
-    stopTime = reservation.stopTimestamps(reservationId);
-    calendarId = reservation.calendarIds(reservationId);
+    while (found) {
+
+      feeCollected = reservation.feeCollected(reservationId);
+      
+      if(feeCollected) {
+        break;
+      }
+
+      rentPrice = reservation.rentPrice(reservationId);
+      tokenOwner.transfer(rentPrice);
+      reservation.setFeeCollected(reservationId, true);
+
+      (found, startTime, reservationId) = startTimestamps.floorEntry(startTime-1);
+    }
   }
   
-  
+  // Provides URI to get token basic details required to be listed on open marketplaces
   function tokenURI(uint256 _tokenId) override public pure returns (string memory) {
     return string(abi.encodePacked(baseTokenURI(), Strings.toString(_tokenId)));
   }
@@ -286,10 +307,17 @@ contract Calendar is ERC809, ContextMixin {
     return ContextMixin.msgSender();
   }
   
+
+  // Allow OpenSea's ERC721 Proxy Address to transact on these assets 
   function isApprovedForAll(
     address _owner,
     address _operator
-  ) public override view returns (bool isOperator) {
+  )
+  public
+  override
+  view
+  returns (bool isOperator)
+  {
     // if OpenSea's ERC721 Proxy Address is detected, auto-return true
     if (_operator == address(0x58807baD0B376efc12F5AD86aAc70E78ed67deaE)) {
       return true;
