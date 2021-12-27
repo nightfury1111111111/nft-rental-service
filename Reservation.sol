@@ -12,6 +12,7 @@ contract Reservation is Ownable, ERC809Child {
   mapping(uint256 => uint256) public stopTimestamps;
 
   mapping(uint256 => uint256) public rentPrice;
+  mapping(uint256 => uint256) public collateralReceived;
   mapping(uint256 => bool) public feeCollected;
 
   uint256 nextTokenId;
@@ -23,7 +24,14 @@ contract Reservation is Ownable, ERC809Child {
   /// @dev A successful reservation must ensure each time slot in the range _start to _stop
   ///  is not previously reserved (by calling the function checkAvailable() described below)
   ///  and then emit a Reserve event.
-  function reserve(address _to, uint256 _rentalCarId, uint256 _start, uint256 _stop, uint256 _rentPrice)
+  function reserve(
+    address _to,
+    uint256 _rentalCarId,
+    uint256 _start,
+    uint256 _stop,
+    uint256 _rentPrice,
+    uint256 _collateral
+  )
   external
   onlyOwner()
   returns(uint256)
@@ -37,6 +45,7 @@ contract Reservation is Ownable, ERC809Child {
     startTimestamps[tokenId] = _start;
     stopTimestamps[tokenId] = _stop;
     rentPrice[tokenId] = _rentPrice;
+    collateralReceived[tokenId] = _collateral;
 
     emit Creation(_to, _rentalCarId, tokenId);
 

@@ -16,8 +16,7 @@ contract RentalCar is ERC809, ContextMixin {
   // Metadata associated with each RCT token
   struct RentalCarMetaData {
     uint256 hourlyRentPrice;
-    // TODO: collateral to be added
-    // uint256 collateral;
+    uint256 collateral;
   }
 
   // mapping of token(RentalCar) id to RentalCarMetaData
@@ -30,12 +29,13 @@ contract RentalCar is ERC809, ContextMixin {
   mapping(uint256 => TreeMap.Map) public startTimestampsMap;
 
   /// @notice Create a new RCT token
-  function mint(uint256 _hourlyRentPrice)
+  function mint(uint256 _hourlyRentPrice, uint256 _collateral)
   public
   {
     uint256 _tokenId = totalSupply();
     super._mint(msg.sender, _tokenId);
     rentalCarMeta[_tokenId].hourlyRentPrice = _hourlyRentPrice;
+    rentalCarMeta[_tokenId].collateral = _collateral;
   }
 
   /// @notice Destroy a RCT token
@@ -69,6 +69,14 @@ contract RentalCar is ERC809, ContextMixin {
   onlyOwner(_tokenId)
   {
     rentalCarMeta[_tokenId].hourlyRentPrice = _hourlyRentPrice;
+  }
+
+  /// @notice Updates collateral of RCT token
+  function updateCollateralAmount(uint256 _tokenId, uint256 _collateral)
+  public
+  onlyOwner(_tokenId)
+  {
+    rentalCarMeta[_tokenId].collateral = _collateral;
   }
 
   /// @notice Query if token `_tokenId` if available to reserve between `_start` and `_stop` time
@@ -141,10 +149,11 @@ contract RentalCar is ERC809, ContextMixin {
     }
 
     uint256 rentPrice = rentalCarMeta[_tokenId].hourlyRentPrice * noOfHours;
-    require(msg.value >= rentPrice, "Provided ether is less then the rent price");
+    uint256 collateral = rentalCarMeta[_tokenId].collateral;
+    require(msg.value >= (rentPrice + collateral), "Provided ether is less then the expected sum(rent price + collateral)");
 
     Reservation reservation = Reservation(reservationContract);
-    uint256 reservationId = reservation.reserve(msg.sender, _tokenId, _start, _stop, rentPrice);
+    uint256 reservationId = reservation.reserve(msg.sender, _tokenId, _start, _stop, rentPrice, collateral);
     startTimestampsMap[_tokenId].put(_start, reservationId);
 
     return reservationId; 
