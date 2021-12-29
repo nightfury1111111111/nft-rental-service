@@ -53,6 +53,13 @@ contract RentalCar is ERC809, ContextMixin {
     _;
   }
 
+  /// @notice Only RCT token renter modifier
+  modifier onlyRenter(uint256 _reservationId) {
+    Reservation reservation = Reservation(reservationContract);
+    require(msg.sender == reservation.ownerOf(_reservationId), "Not authorized");
+    _;
+  }
+
   /// @notice Only RCT token owner or Reservation owner modifier
   modifier onlyOwnerOrRenter(uint256 _tokenId, uint256 _reservationId) {
     bool isOwner = msg.sender == ownerOf(_tokenId);
@@ -101,7 +108,7 @@ contract RentalCar is ERC809, ContextMixin {
   override
   returns(bool)
   {
-    require(_stop > _start, "Stop must ends after start");
+    require(_stop > _start, "Stop must end after start");
     require(_stop - _start <= RESERVATION_DURATION_LIMIT, "Reservation duration must not exceed limit");
 
     bool found;
@@ -141,19 +148,12 @@ contract RentalCar is ERC809, ContextMixin {
       revert("RentalCar is unavailable during this time period");
     }
 
-    uint256 noOfHours = (_stop - _start) / 3600;
-    uint256 remainder = (_stop - _start) - 3600 * noOfHours;
-
-    if(remainder > 0) {
-        noOfHours += 1;
-    }
-
-    uint256 rentPrice = rentalCarMeta[_tokenId].hourlyRentPrice * noOfHours;
-    uint256 collateral = rentalCarMeta[_tokenId].collateral;
-    require(msg.value >= (rentPrice + collateral), "Provided ether is less then the expected sum(rent price + collateral)");
+    uint256 rentPrice = rentalCarMeta[_tokenId].hourlyRentPrice * getNoOfHours(_start, _stop);
+    uint256 minimumCollateral = rentalCarMeta[_tokenId].collateral;
+    require(msg.value >= (rentPrice + minimumCollateral), "Provided ether is less then the expected sum(rent price + collateral)");
 
     Reservation reservation = Reservation(reservationContract);
-    uint256 reservationId = reservation.reserve(msg.sender, _tokenId, _start, _stop, rentPrice, collateral);
+    uint256 reservationId = reservation.reserve(msg.sender, _tokenId, _start, _stop, rentPrice, msg.value - rentPrice);
     startTimestampsMap[_tokenId].put(_start, reservationId);
 
     return reservationId; 
@@ -187,7 +187,7 @@ contract RentalCar is ERC809, ContextMixin {
       stopTime = reservation.stopTimestamps(reservationId);
       if (stopTime <= _stop && ((reservation.ownerOf(reservationId) == msg.sender) || (ownerOf(_tokenId) == msg.sender))) {
 
-        rentPrice = reservation.rentPrice(reservationId);
+        rentPrice = reservation.rentPrices(reservationId);
         renter = payable(reservation.ownerOf(reservationId));
         renter.transfer(rentPrice);
 
@@ -219,7 +219,7 @@ contract RentalCar is ERC809, ContextMixin {
       revert("RentalCar id is invalid");
     }
 
-    uint256 rentPrice = reservation.rentPrice(_reservationId);
+    uint256 rentPrice = reservation.rentPrices(_reservationId);
     address payable renter = payable(reservation.ownerOf(_reservationId));
     renter.transfer(rentPrice);
 
@@ -227,6 +227,80 @@ contract RentalCar is ERC809, ContextMixin {
 
     TreeMap.Map storage startTimestamps = startTimestampsMap[_tokenId];
     startTimestamps.remove(startTime);
+  }
+
+  function pickUpCar(uint256 _reservationId)
+  public
+  onlyRenter(_reservationId)
+  {
+    Reservation reservation = Reservation(reservationContract);
+
+    require(reservation.reservationStatuses(_reservationId) == Reservation.ReservationStatus.Reserved, "Cannot pickup car at this stage");
+
+    uint256 startTime = reservation.startTimestamps(_reservationId);
+    uint256 stopTime = reservation.stopTimestamps(_reservationId);
+
+    uint256 timeNow = block.timestamp;
+
+    require(timeNow >= startTime && timeNow < stopTime, "Reservation is either not started or already completed");
+
+    reservation.carPickedUp(_reservationId, timeNow);
+
+    // TODO: If called pickup before start time and car is available take extra fee and start renting
+  }
+
+  function getNoOfHours(uint256 _start, uint256 _stop)
+  private
+  returns(uint256 noOfHours)
+  {
+    noOfHours = (_stop - _start) / 3600;
+    uint256 remainder = (_stop - _start) - 3600 * noOfHours;
+
+    if(remainder > 0) {
+        noOfHours += 1;
+    }
+  }
+
+  function returnCar(uint256 _reservationId)
+  public
+  payable
+  onlyRenter(_reservationId)
+  {
+    Reservation reservation = Reservation(reservationContract);
+
+    require(reservation.reservationStatuses(_reservationId) == Reservation.ReservationStatus.PickedUp, "Car is not picked up yet");
+    uint256 stopTime = reservation.stopTimestamps(_reservationId);
+
+    uint timeNow = block.timestamp;
+    if(timeNow < stopTime) {
+      reservation.carReturned(_reservationId, timeNow);
+      return;
+    }
+
+    uint256 startTime = reservation.startTimestamps(_reservationId);
+    
+    uint256 originalNoOfHour = getNoOfHours(startTime, stopTime);
+    uint256 delayedNoOfHour = getNoOfHours(startTime, timeNow);
+
+    uint256 extraHours = delayedNoOfHour - originalNoOfHour;
+    if(extraHours < 1) {
+      extraHours = 1;
+    }
+
+    uint256 rentalCarId = reservation.rentalCarIds(_reservationId);
+    uint256 extraRentPrice = rentalCarMeta[rentalCarId].hourlyRentPrice * extraHours;
+    uint256 collateral = reservation.receivedCollaterals(_reservationId);
+
+    if(collateral < extraRentPrice) {
+      uint256 extraPay = extraRentPrice - collateral;
+      require(msg.value >= extraPay, "Please pay for late return");
+      reservation.setReceivedCollateral(_reservationId, msg.value - extraPay);
+    }else{
+      reservation.setReceivedCollateral(_reservationId, collateral - extraRentPrice);
+    }
+
+    reservation.carReturned(_reservationId, timeNow);
+    return;
   }
 
   /// @notice Find the owner of the reservation that overlaps `_timestamp` for the RCT `_tokenId`
@@ -271,7 +345,7 @@ contract RentalCar is ERC809, ContextMixin {
     bool found;
     uint256 startTime;
     uint256 reservationId;
-    bool feeCollected;
+    Reservation.ReservationStatus reservationStatus;
     uint256 rentPrice;
 
     (found, startTime, reservationId) = startTimestamps.floorEntry(block.timestamp);
@@ -281,13 +355,13 @@ contract RentalCar is ERC809, ContextMixin {
 
     while (found) {
 
-      feeCollected = reservation.feeCollected(reservationId);
+      reservationStatus = reservation.reservationStatuses(reservationId);
       
-      if(feeCollected) {
+      if(reservationStatus == Reservation.ReservationStatus.ReservationComplete) {
         break;
       }
 
-      rentPrice = reservation.rentPrice(reservationId);
+      rentPrice = reservation.rentPrices(reservationId);
       tokenOwner.transfer(rentPrice);
       reservation.setFeeCollected(reservationId, true);
 

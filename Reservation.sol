@@ -7,13 +7,24 @@ import "./ERC809.sol";
 
 contract Reservation is Ownable, ERC809Child {
 
+  enum ReservationStatus {
+    Reserved, // When NFT is freshly reserved
+    PickedUp, // When Car is picked up by renter
+    Returned, // When Car is returned by renter
+    ReservationComplete, // When car owner acknowledges the car return
+    Cancelled // When reservation is cancelled
+  }
+
   mapping(uint256 => uint256) public rentalCarIds;
   mapping(uint256 => uint256) public startTimestamps;
   mapping(uint256 => uint256) public stopTimestamps;
 
-  mapping(uint256 => uint256) public rentPrice;
-  mapping(uint256 => uint256) public collateralReceived;
-  mapping(uint256 => bool) public feeCollected;
+  mapping(uint256 => uint256) public rentPrices;
+  mapping(uint256 => uint256) public receivedCollaterals;
+ 
+  mapping(uint256 => uint256) public pickUpTimes;
+  mapping(uint256 => uint256) public returnTimes;
+  mapping(uint256 => ReservationStatus) public reservationStatuses;
 
   uint256 nextTokenId;
 
@@ -23,7 +34,7 @@ contract Reservation is Ownable, ERC809Child {
   /// @notice Reserve access to token `_tokenId` from time `_start` to time `_stop`
   /// @dev A successful reservation must ensure each time slot in the range _start to _stop
   ///  is not previously reserved (by calling the function checkAvailable() described below)
-  ///  and then emit a Reserve event.
+  ///  and then emit a Reserve event.327
   function reserve(
     address _to,
     uint256 _rentalCarId,
@@ -44,18 +55,39 @@ contract Reservation is Ownable, ERC809Child {
     rentalCarIds[tokenId] = _rentalCarId;
     startTimestamps[tokenId] = _start;
     stopTimestamps[tokenId] = _stop;
-    rentPrice[tokenId] = _rentPrice;
-    collateralReceived[tokenId] = _collateral;
+    rentPrices[tokenId] = _rentPrice;
+    receivedCollaterals[tokenId] = _collateral;
 
+    reservationStatuses[tokenId] = ReservationStatus.Reserved;
     emit Creation(_to, _rentalCarId, tokenId);
 
     return tokenId;
   }
 
-  function setFeeCollected(uint256 _tokenId, bool collected)
+  function carPickedUp(uint256 _tokenId, uint256 _pickUpTime)
   public
   {
-    feeCollected[_tokenId] = collected;
+    pickUpTimes[_tokenId] = _pickUpTime;
+    reservationStatuses[_tokenId] = ReservationStatus.PickedUp;
+  }
+
+  function carReturned(uint256 _tokenId, uint256 _retrunTime)
+  public
+  {
+    returnTimes[_tokenId] = _retrunTime;
+    reservationStatuses[_tokenId] = ReservationStatus.Returned;
+  }
+
+  function setReservationComplete(uint256 _tokenId, bool _reservationComplete)
+  public
+  {
+    reservationData[_tokenId].reservationComplete = _reservationComplete;
+  }
+
+  function setReceivedCollateral(uint256 _tokenId, uint256 _receivedCollateral)
+  public
+  {
+    reservationData[_tokenId].receivedCollateral = _receivedCollateral;
   }
 
   function cancel(address _owner, uint256 _tokenId)
@@ -64,11 +96,10 @@ contract Reservation is Ownable, ERC809Child {
   {
     super._burn(_tokenId);
 
-    uint256 rentalCarId = rentalCarIds[_tokenId];
-    delete rentalCarIds[_tokenId];
-    delete startTimestamps[_tokenId];
-    delete stopTimestamps[_tokenId];
+    uint256 rentalCarId = reservationData[_tokenId].rentalCarId;
+    reservationData[_tokenId].cancelled = true;
 
+    reservationStatuses[_tokenId] = ReservationStatus.Cancelled;
     emit Cancellation(_owner, rentalCarId, _tokenId);
   }
 }
