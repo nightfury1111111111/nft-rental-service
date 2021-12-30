@@ -11,6 +11,7 @@ contract Reservation is Ownable, ERC809Child {
     Reserved, // When NFT is freshly reserved
     PickedUp, // When Car is picked up by renter
     Returned, // When Car is returned by renter
+    ReturnAcknowledged, // When car owner acknowledges the car return
     ReservationComplete, // When car owner acknowledges the car return
     Cancelled // When reservation is cancelled
   }
@@ -25,6 +26,9 @@ contract Reservation is Ownable, ERC809Child {
   mapping(uint256 => uint256) public pickUpTimes;
   mapping(uint256 => uint256) public returnTimes;
   mapping(uint256 => ReservationStatus) public reservationStatuses;
+
+  mapping(uint256 => bool) public feeCollected;
+  mapping(uint256 => bool) public collateralClaimed;
 
   uint256 nextTokenId;
 
@@ -78,16 +82,40 @@ contract Reservation is Ownable, ERC809Child {
     reservationStatuses[_tokenId] = ReservationStatus.Returned;
   }
 
-  function setReservationComplete(uint256 _tokenId, bool _reservationComplete)
+  function markReservationComplete(uint256 _tokenId)
   public
   {
-    reservationData[_tokenId].reservationComplete = _reservationComplete;
+    reservationStatuses[_tokenId] = ReservationStatus.ReservationComplete;
+  }
+
+  function markFeeCollected(uint256 _tokenId)
+  public
+  {
+    feeCollected[_tokenId] = true;
+  }
+
+  function markCollateralClaimed(uint256 _tokenId)
+  public
+  {
+    collateralClaimed[_tokenId] = true;
+  }
+
+  function markReturnAcknoledge(uint256 _tokenId)
+  public
+  {
+    reservationStatuses[_tokenId] = ReservationStatus.ReturnAcknowledged;
   }
 
   function setReceivedCollateral(uint256 _tokenId, uint256 _receivedCollateral)
   public
   {
-    reservationData[_tokenId].receivedCollateral = _receivedCollateral;
+    receivedCollaterals[_tokenId] = _receivedCollateral;
+  }
+
+  function updateRentPrice(uint256 _tokenId, uint256 _newRentPrice)
+  public
+  {
+    rentPrices[_tokenId] = _newRentPrice;
   }
 
   function cancel(address _owner, uint256 _tokenId)
@@ -96,10 +124,9 @@ contract Reservation is Ownable, ERC809Child {
   {
     super._burn(_tokenId);
 
-    uint256 rentalCarId = reservationData[_tokenId].rentalCarId;
-    reservationData[_tokenId].cancelled = true;
-
+    uint256 rentalCarId = rentalCarIds[_tokenId];
     reservationStatuses[_tokenId] = ReservationStatus.Cancelled;
+    
     emit Cancellation(_owner, rentalCarId, _tokenId);
   }
 }
