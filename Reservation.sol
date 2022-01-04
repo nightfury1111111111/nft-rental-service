@@ -32,6 +32,13 @@ contract Reservation is Ownable, ERC809Child {
 
   uint256 nextTokenId;
 
+  event CarPickedUp(address indexed _renter, uint256 _rentalCarId, uint256 _tokenId);
+  event CarReturned(address indexed _renter, uint256 _rentalCarId, uint256 _tokenId);
+  event CarReturnAcknowledged(address indexed _rentalCarOwner, uint256 _rentalCarId, uint256 _tokenId);
+  event ReservationComplete(address indexed _rentalCarOwner, uint256 _rentalCarId, uint256 _tokenId);
+  event ReservationFeeCollected(address indexed _rentalCarOwner, uint256 _rentalCarId, uint256 _tokenId);
+  event CollateralClaimed(address indexed _renter, uint256 _rentalCarId, uint256 _tokenId);
+
   constructor() ERC721("Reservation", "REZ") {
   }
 
@@ -69,53 +76,74 @@ contract Reservation is Ownable, ERC809Child {
   }
 
   function carPickedUp(uint256 _tokenId, uint256 _pickUpTime)
-  public
+  external
+  onlyOwner()
   {
     pickUpTimes[_tokenId] = _pickUpTime;
     reservationStatuses[_tokenId] = ReservationStatus.PickedUp;
+    emit CarPickedUp(msg.sender, rentalCarIds[_tokenId], _tokenId);
   }
 
   function carReturned(uint256 _tokenId, uint256 _retrunTime)
-  public
+  external
+  onlyOwner()
   {
     returnTimes[_tokenId] = _retrunTime;
     reservationStatuses[_tokenId] = ReservationStatus.Returned;
+    emit CarReturned(msg.sender, rentalCarIds[_tokenId], _tokenId);
   }
 
   function markReservationComplete(uint256 _tokenId)
-  public
+  external
+  onlyOwner()
   {
     reservationStatuses[_tokenId] = ReservationStatus.ReservationComplete;
+    emit ReservationComplete(msg.sender, rentalCarIds[_tokenId], _tokenId);
   }
 
   function markFeeCollected(uint256 _tokenId)
-  public
+  external
+  onlyOwner()
   {
     feeCollected[_tokenId] = true;
+    emit ReservationFeeCollected(msg.sender, rentalCarIds[_tokenId], _tokenId);
   }
 
   function markCollateralClaimed(uint256 _tokenId)
-  public
+  external
+  onlyOwner()
   {
     collateralClaimed[_tokenId] = true;
+    emit ReservationFeeCollected(ownerOf(_tokenId), rentalCarIds[_tokenId], _tokenId);
   }
 
   function markReturnAcknoledge(uint256 _tokenId)
-  public
+  external
+  onlyOwner()
   {
     reservationStatuses[_tokenId] = ReservationStatus.ReturnAcknowledged;
+    emit CarReturnAcknowledged(msg.sender, rentalCarIds[_tokenId], _tokenId);
   }
 
   function setReceivedCollateral(uint256 _tokenId, uint256 _receivedCollateral)
-  public
+  external
+  onlyOwner()
   {
     receivedCollaterals[_tokenId] = _receivedCollateral;
   }
 
   function updateRentPrice(uint256 _tokenId, uint256 _newRentPrice)
-  public
+  external
+  onlyOwner()
   {
     rentPrices[_tokenId] = _newRentPrice;
+  }
+
+  function updateStopTime(uint256 _tokenId, uint256 stopTime)
+  external
+  onlyOwner()
+  {
+    stopTimestamps[_tokenId] = stopTime;
   }
 
   function cancel(address _owner, uint256 _tokenId)
