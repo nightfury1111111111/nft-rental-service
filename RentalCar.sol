@@ -26,7 +26,7 @@ contract RentalCar is ERC809, ContextMixin {
   uint256 constant public RESERVATION_DURATION_LIMIT = 48 hours;
 
   // mapping of token(RCT) id to mapping from start/end timestamp of a reservation to its id
-  mapping(uint256 => TreeMap.Map) public startTimestampsMap;
+  mapping(uint256 => TreeMap.Map) private startTimestampsMap;
 
   function getBalance()
   public
@@ -80,7 +80,7 @@ contract RentalCar is ERC809, ContextMixin {
 
   /// @notice Updates hourly rent price of RCT token
   function updateHourlyRentPrice(uint256 _tokenId, uint256 _hourlyRentPrice)
-  public
+  external
   onlyOwner(_tokenId)
   {
     rentalCarMeta[_tokenId].hourlyRentPrice = _hourlyRentPrice;
@@ -88,7 +88,7 @@ contract RentalCar is ERC809, ContextMixin {
 
   /// @notice Updates collateral of RCT token
   function updateCollateralAmount(uint256 _tokenId, uint256 _collateral)
-  public
+  external
   onlyOwner(_tokenId)
   {
     rentalCarMeta[_tokenId].collateral = _collateral;
@@ -145,9 +145,9 @@ contract RentalCar is ERC809, ContextMixin {
   /// @dev A successful reservation must ensure each time slot in the range _start to _stop
   ///  is not previously reserved.
   function reserve(uint256 _tokenId, uint256 _start, uint256 _stop)
-  public
+  external
   payable
-  returns(uint256)
+  returns(uint256 reservationId)
   {
     require(_exists(_tokenId), "RentalCar does not exist");
     require(_start >= block.timestamp, "Cannot reserve for past date");
@@ -161,20 +161,19 @@ contract RentalCar is ERC809, ContextMixin {
     require(msg.value >= (rentPrice + minimumCollateral), "Provided ether is less then the expected sum(rent price + collateral)");
 
     Reservation reservation = Reservation(reservationContract);
-    uint256 reservationId = reservation.reserve(msg.sender, _tokenId, _start, _stop, rentPrice, msg.value - rentPrice);
+    reservationId = reservation.reserve(msg.sender, _tokenId, _start, _stop, rentPrice, msg.value - rentPrice);
     startTimestampsMap[_tokenId].put(_start, reservationId);
-
-    return reservationId; 
   }
 
   /// @notice Cancel all reservations for `_tokenId` between `_start` and `_stop`
-  /// @return number of reservation that has been cancelled
+  /// returns number of reservation that has been cancelled
   function cancelAll(uint256 _tokenId, uint256 _start, uint256 _stop)
   public
   override
-  returns (uint256)
+  returns (uint256 cancelled)
   {
     require(_exists(_tokenId), "RentalCar does not exist");
+    require(_start > block.timestamp, "Cannot cancel for past dates");
 
     TreeMap.Map storage startTimestamps = startTimestampsMap[_tokenId];
     Reservation reservation = Reservation(reservationContract);
@@ -183,38 +182,30 @@ contract RentalCar is ERC809, ContextMixin {
     uint256 startTime = _start;
     uint256 stopTime;
     uint256 reservationId;
-    uint256 cancelled = 0;
+    cancelled = 0;
     Reservation.ReservationStatus reservationStatus;
 
-    uint256 rentPrice;
-    address payable renter;
+    bool isRCTOwner = ownerOf(_tokenId) == msg.sender;
 
     // If the msg.sender is owner of RCT token, he should be able to cancel all the reservations made
     // A renter can cancel all bookings made by him in the given time period
     (found, startTime, reservationId) = startTimestamps.ceilingEntry(startTime);
     while (found) {
+      
       stopTime = reservation.stopTimestamps(reservationId);
-      require(reservation.reservationStatuses(reservationId) == Reservation.ReservationStatus.Reserved, "Cannot cancel rental at this stage");
-
       reservationStatus = reservation.reservationStatuses(reservationId);
+
       if (stopTime <= _stop && ((reservation.ownerOf(reservationId) == msg.sender) 
-            || (ownerOf(_tokenId) == msg.sender))
+            || isRCTOwner)
             && reservationStatus == Reservation.ReservationStatus.Reserved) {
 
-        rentPrice = reservation.rentPrices(reservationId);
-        renter = payable(reservation.ownerOf(reservationId));
-        renter.transfer(rentPrice);
-
-        reservation.cancel(msg.sender, reservationId);
-        startTimestamps.remove(startTime);
-
+        cancel(_tokenId, reservationId);
         cancelled++;
       }
 
       (found, startTime, reservationId) = startTimestamps.higherEntry(startTime);
     }
 
-    return cancelled;
   }
 
   /// @notice Cancel reservation `_reservationId` for RCT `_tokenId`
@@ -230,6 +221,9 @@ contract RentalCar is ERC809, ContextMixin {
     require(reservation.reservationStatuses(_reservationId) == Reservation.ReservationStatus.Reserved, "Cannot cancel rental at this stage");
 
     uint256 startTime = reservation.startTimestamps(_reservationId);
+
+    require(startTime > block.timestamp, "Cannot cancel - Reservation already started");
+
     uint256 rentalCarId = reservation.rentalCarIds(_reservationId);
     if (rentalCarId != _tokenId) {
       revert("RentalCar id is invalid");
@@ -239,6 +233,8 @@ contract RentalCar is ERC809, ContextMixin {
     address payable renter = payable(reservation.ownerOf(_reservationId));
     renter.transfer(rentPrice);
 
+    refundCollateral(_reservationId);
+
     reservation.cancel(msg.sender, _reservationId);
 
     TreeMap.Map storage startTimestamps = startTimestampsMap[_tokenId];
@@ -247,7 +243,7 @@ contract RentalCar is ERC809, ContextMixin {
 
   /// @notice Pickup the reserved car when the reservation period is started
   function pickUpCar(uint256 _reservationId)
-  public
+  external
   onlyRenter(_reservationId)
   {
     Reservation reservation = Reservation(reservationContract);
@@ -284,7 +280,7 @@ contract RentalCar is ERC809, ContextMixin {
   /// Extra amount will be first deducted from the collateral
   /// If collateral is not enough then leftover amount needs to be sent to this function 
   function returnCar(uint256 _reservationId)
-  public
+  external
   payable
   onlyRenter(_reservationId)
   {
@@ -311,7 +307,8 @@ contract RentalCar is ERC809, ContextMixin {
 
     uint256 rentalCarId = reservation.rentalCarIds(_reservationId);
 
-    // TODO: For now there is no fee for extra rental hours, we can charge on top of rent price for extra hours.
+    // TODO: For now there is no late fee for extra rental hours, only the rent price.
+    // We can charge on top of rent price for extra hours.
     // For example: Hourly rent price for extra hours is 10% expensive then reserved period.
     uint256 extraRentPrice = rentalCarMeta[rentalCarId].hourlyRentPrice * extraHours;
     uint256 collateral = reservation.receivedCollaterals(_reservationId);
@@ -328,40 +325,23 @@ contract RentalCar is ERC809, ContextMixin {
       reservation.setReceivedCollateral(_reservationId, collateral - extraRentPrice);
     }
 
+    reservation.updateStopTime(_reservationId, timeNow);
+
     reservation.carReturned(_reservationId, timeNow);
-    return;
   }
 
-  /// @notice Car return by renter is acknowledged by the Rental Car owner
+  /// @notice If car is picked up and returned by the renter
+  /// this function acknowledges the return by the Rental Car owner
   /// at the same time all payments are processed and reservation is marked as completed.
-  function acknowledgeReturn(uint256 _tokenId, uint256 _reservationId)
+  function completeReservation(uint256 _tokenId, uint256 _reservationId)
   public
   onlyOwner(_tokenId)
   {
     Reservation reservation = Reservation(reservationContract);
 
-    require(reservation.reservationStatuses(_reservationId) == Reservation.ReservationStatus.Returned, "Car is not returned yet or reservation is already completed");
-
-    reservation.markReservationComplete(_reservationId);
-
-    processPayment(_reservationId);
-
-    claimCollateral(_reservationId);
-
-    reservation.updateStopTime(_reservationId, block.timestamp);
-  }
-
-  /// @notice Rent price for the given _reservationId is sent to the Rental Car owner if reservation is complete.
-  function processPayment(uint256 _reservationId)
-  public
-  {
-    Reservation reservation = Reservation(reservationContract);
-
-    require(!reservation.feeCollected(_reservationId), "Payment already processed");
-
     Reservation.ReservationStatus reservationStatus = reservation.reservationStatuses(_reservationId);
 
-    bool isReservationComplete = (reservationStatus == Reservation.ReservationStatus.ReservationComplete);
+    bool isCarReturned = (reservationStatus == Reservation.ReservationStatus.Returned);
 
     uint256 stopTime = reservation.stopTimestamps(_reservationId);
     bool isReservationPeriodOver = (reservationStatus == Reservation.ReservationStatus.Reserved) 
@@ -369,44 +349,33 @@ contract RentalCar is ERC809, ContextMixin {
 
     // Payment will be sent to owner only if reservation is completed (Car picked up, returned and return acknowledged) 
     // or reservation period is over (Car not picked up but reservation period is complete)
-    require(isReservationComplete || isReservationPeriodOver, "Cannot process payment at this stage");
+    require(isCarReturned || isReservationPeriodOver, "Cannot complete reservation at this stage");
 
-    if(!isReservationComplete) {
-      reservation.markReservationComplete(_reservationId);
-    }
+    reservation.markReservationComplete(_reservationId);
+    
+    processPayment(_reservationId);
 
+    refundCollateral(_reservationId);
+  }
+
+  /// @notice Rent price for the given _reservationId is sent to the Rental Car owner.
+  function processPayment(uint256 _reservationId)
+  private
+  {
+    Reservation reservation = Reservation(reservationContract);
     uint256 rentPrice = reservation.rentPrices(_reservationId);
     uint256 rentalCarId = reservation.rentalCarIds(_reservationId);
     payable(ownerOf(rentalCarId)).transfer(rentPrice);
-    reservation.markFeeCollected(_reservationId);
   }
 
-  /// @notice Provided collateral amount for the given _reservationId is sent to the renter if reservation is complete.
-  function claimCollateral(uint256 _reservationId)
-  public
+  /// @notice Collected collateral amount for the given _reservationId is reverted to the renter.
+  function refundCollateral(uint256 _reservationId)
+  private
   {
     Reservation reservation = Reservation(reservationContract);
-
-    require(!reservation.collateralClaimed(_reservationId), "Collateral already claimed");
-
-    Reservation.ReservationStatus reservationStatus = reservation.reservationStatuses(_reservationId);
-
-    bool isReservationComplete = (reservationStatus == Reservation.ReservationStatus.ReservationComplete);
-
-    bool isReservationCancelled = (reservationStatus == Reservation.ReservationStatus.Cancelled);
-
-    uint256 stopTime = reservation.stopTimestamps(_reservationId);
-    bool isReservationPeriodOver = (reservationStatus == Reservation.ReservationStatus.Reserved) 
-      && (block.timestamp > stopTime);
-
-    // Payment will be sent to owner only if reservation is completed (Car picked, returned and return acknowledged) 
-    // or reservation period is over (Car not picked up but reservation period is complete)
-    require(isReservationComplete || isReservationPeriodOver || isReservationCancelled, "Cannot process collateral claim at this stage");
-
     uint256 collateralAmt = reservation.receivedCollaterals(_reservationId);
     address payable renter = payable(reservation.ownerOf(_reservationId));
     renter.transfer(collateralAmt);
-    reservation.markCollateralClaimed(_reservationId);
   }
 
   /// @notice Find the owner of the reservation that overlaps `_timestamp` for the RCT `_tokenId`
@@ -444,37 +413,35 @@ contract RentalCar is ERC809, ContextMixin {
 
   /// @notice RCT token owner can collect fee once reservation is completed or has been started
   function processPaymentWithinDuration(uint256 _tokenId, uint256 _start, uint256 _stop)
-  public
+  external
+  onlyOwner(_tokenId)
   {
-    TreeMap.Map storage startTimestamps = startTimestampsMap[_tokenId];
+    require(_stop < block.timestamp, "cannot process payments for future");
 
+    TreeMap.Map storage startTimestamps = startTimestampsMap[_tokenId];
+  
     bool found;
     uint256 startTime;
     uint256 reservationId;
-    uint256 rentPrice;
     uint256 stopTime;
+
+    Reservation.ReservationStatus reservationStatus;
+
 
     (found, startTime, reservationId) = startTimestamps.floorEntry(_stop);
 
-    address payable tokenOwner = payable(ownerOf(_tokenId));
     Reservation reservation = Reservation(reservationContract);
 
     while (found && startTime >= _start) {
 
       stopTime = reservation.stopTimestamps(reservationId);
 
-      if(stopTime > _stop || reservation.feeCollected(reservationId)) {
-        (found, startTime, reservationId) = startTimestamps.floorEntry(startTime-1);
-        continue;
-      }
+      reservationStatus = reservation.reservationStatuses(reservationId);
 
-      if((reservation.reservationStatuses(reservationId) != Reservation.ReservationStatus.ReservationComplete)) {
-        reservation.markReservationComplete(reservationId);
+      if(stopTime < _stop && (reservationStatus == Reservation.ReservationStatus.Reserved
+        || reservationStatus == Reservation.ReservationStatus.Returned)) {
+        completeReservation(_tokenId, reservationId);
       }
-
-      rentPrice = reservation.rentPrices(reservationId);
-      tokenOwner.transfer(rentPrice);
-      reservation.markFeeCollected(reservationId);
 
       (found, startTime, reservationId) = startTimestamps.floorEntry(startTime-1);
     }

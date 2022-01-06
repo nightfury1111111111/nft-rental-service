@@ -27,18 +27,12 @@ contract Reservation is Ownable, ERC809Child {
   mapping(uint256 => uint256) public returnTimes;
   mapping(uint256 => ReservationStatus) public reservationStatuses;
 
-  mapping(uint256 => bool) public feeCollected;
-  mapping(uint256 => bool) public collateralClaimed;
-
   uint256 nextTokenId;
 
-  event CarPickedUp(address indexed _renter, uint256 _rentalCarId, uint256 _tokenId);
-  event CarReturned(address indexed _renter, uint256 _rentalCarId, uint256 _tokenId);
-  event CarReturnAcknowledged(address indexed _rentalCarOwner, uint256 _rentalCarId, uint256 _tokenId);
-  event ReservationComplete(address indexed _rentalCarOwner, uint256 _rentalCarId, uint256 _tokenId);
-  event ReservationFeeCollected(address indexed _rentalCarOwner, uint256 _rentalCarId, uint256 _tokenId);
-  event CollateralClaimed(address indexed _renter, uint256 _rentalCarId, uint256 _tokenId);
-
+  event CarPickedUp(address indexed _renter, uint256 _rentalCarId, uint256 _reservationId);
+  event CarReturned(address indexed _renter, uint256 _rentalCarId, uint256 _reservationId);
+  event ReservationComplete(address indexed _rentalCarOwner, uint256 _rentalCarId, uint256 _reservationId);
+  
   constructor() ERC721("Reservation", "REZ") {
   }
 
@@ -99,30 +93,6 @@ contract Reservation is Ownable, ERC809Child {
   {
     reservationStatuses[_tokenId] = ReservationStatus.ReservationComplete;
     emit ReservationComplete(msg.sender, rentalCarIds[_tokenId], _tokenId);
-  }
-
-  function markFeeCollected(uint256 _tokenId)
-  external
-  onlyOwner()
-  {
-    feeCollected[_tokenId] = true;
-    emit ReservationFeeCollected(msg.sender, rentalCarIds[_tokenId], _tokenId);
-  }
-
-  function markCollateralClaimed(uint256 _tokenId)
-  external
-  onlyOwner()
-  {
-    collateralClaimed[_tokenId] = true;
-    emit ReservationFeeCollected(ownerOf(_tokenId), rentalCarIds[_tokenId], _tokenId);
-  }
-
-  function markReturnAcknoledge(uint256 _tokenId)
-  external
-  onlyOwner()
-  {
-    reservationStatuses[_tokenId] = ReservationStatus.ReturnAcknowledged;
-    emit CarReturnAcknowledged(msg.sender, rentalCarIds[_tokenId], _tokenId);
   }
 
   function setReceivedCollateral(uint256 _tokenId, uint256 _receivedCollateral)
